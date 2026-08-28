@@ -15,7 +15,6 @@ with st.sidebar:
     # 尝试从 Streamlit Secrets 中读取
     api_key = st.secrets.get("SILICONFLOW_API_KEY", "")
     
-    # 判断逻辑：如果 Secrets 里没有配置，才显示手动输入框
     if not api_key:
         api_key = st.text_input("请输入 SiliconFlow API Key", type="password")
         st.warning("👈 未检测到内置密钥，请手动输入")
@@ -31,7 +30,6 @@ with st.sidebar:
 def load_data():
     """加载本地真题 JSON 数据"""
     try:
-        # 这里默认读取 data.json，如果你合并了 PDF/Word 的数据，确保都存进了这个文件
         with open('data.json', 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
@@ -55,38 +53,29 @@ def get_word_variants(word, client):
         )
         raw_content = response.choices[0].message.content.strip()
         
-        # 1. 过滤掉大模型自带的 <think>...</think> 思维链标签及残留标记
+        # 过滤 <think> 标签及非字母字符
         cleaned = re.sub(r'<think>.*?</think>', '', raw_content, flags=re.DOTALL)
         cleaned = re.sub(r'</?think>', '', cleaned)
-        
-        # 2. 仅保留英文字母和分隔符 "|"（剔除空格、换行及特殊符号）
         cleaned = re.sub(r'[^a-zA-Z|]', '', cleaned)
         
-        # 3. 拆分、去重，并强制确保原词一定在检索列表内
         variants_list = [v.strip() for v in cleaned.split('|') if v.strip()]
         if word.lower() not in [v.lower() for v in variants_list]:
             variants_list.append(word.strip())
             
-        # 重新拼接为管道符形式，如 "ever" 或 "make|makes|made|making"
         return "|".join(list(dict.fromkeys(variants_list)))
-        
-    except Exception as e:
-        # 模型调用异常时保底返回原词
+    except Exception:
         return word
 
-
 def search_word_expanded(word_variants_str, data):
-    """使用包含多变形的正则表达式在本地库中精确搜索"""
+    """使用多重匹配正则表达式在本地库中精确搜索"""
     results = []
-    # 构建多重匹配正则，例如 \b(subject|subjects|subjected)\b，忽略大小写
     try:
         pattern = re.compile(rf'\b({word_variants_str})\b', re.IGNORECASE)
     except re.error:
-        # 如果 AI 返回了奇怪的符号导致正则崩溃，回退到普通匹配
         pattern = re.compile(rf'\b{word_variants_str}\b', re.IGNORECASE)
         
     for item in data:
-        if pattern.search(item['sentence']):
+        if pattern.search(item.get('sentence', '')):
             results.append(item)
     return results
 
@@ -99,15 +88,14 @@ if st.button("透视真题考法"):
     elif not api_key:
         st.warning("请配置 SiliconFlow API Key。")
     else:
-        # 初始化 API 客户端
         client = OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn/v1")
         
-        # --- 第 0 步：词形动态扩展 ---
+        # --- 步骤 0：词形动态扩展 ---
         with st.spinner('🤖 正在智能推演单词变形...'):
             variants_str = get_word_variants(target_word.strip(), client)
             st.caption(f"🔍 实际检索词根簇: `{variants_str}`")
 
-        # --- 第一步：传统数据库精准检索 ---
+        # --- 步骤 1：本地真题库检索 ---
         with st.spinner('⚡ 正在真题库中扫荡原句...'):
             matched_results = search_word_expanded(variants_str, exam_data)
         
@@ -116,15 +104,15 @@ if st.button("透视真题考法"):
         else:
             st.success(f"检索完毕！共找到 {len(matched_results)} 条原句。")
             
-                        # 展示原句出处并拼装上下文
+            # 展示原句出处并拼装原句内容
             extracted_text = ""
             with st.expander("查看真题原句出处", expanded=False):
                 for res in matched_results:
-                    line = f"[{res['year']} {res['source']}] {res['sentence']}"
+                    line = f"[{res.get('year', '')} {res.get('source', '')}] {res.get('sentence', '')}"
                     st.markdown(f"- {line}")
                     extracted_text += line + "\n"
             
-            # ================= 新增：独立下载原句按钮 =================
+            # --- 独立下载按钮 1：仅下载原句 ---
             sentences_note = f"【真题原句出处：{target_word}】\n检索词根簇：{variants_str}\n" + "="*40 + "\n\n" + extracted_text
             st.download_button(
                 label="💾 仅下载真题原句 (TXT)",
@@ -133,18 +121,18 @@ if st.button("透视真题考法"):
                 mime="text/plain"
             )
 
-
-            # --- 第二步：组装 Prompt 并调用大模型深度分析 ---
+            # --- 步骤 2：调用大模型深度分析 ---
             with st.spinner('🧠 AI 正在深度解析真题考法，请稍候...'):
                 prompt = f"""
 你是一个专业的考研英语分析专家。现在我要重点分析单词【{target_word}】及其变形【{variants_str}】。
-以下是它们在历年考研真题中的所有出处原句：
+以下是它们在历年考研真题中的出处原句：
 {extracted_text}
 
-请根据以上【真实的真题语料】，进行归纳并输出：
-1. **考察释义**：该单词在真题中实际考察了哪些意思（请严格根据提供的原句进行总结，标明对应年份）。
-2. **相关短语**：真题原句中出现了哪些由该单词构成的固定搭配或高频短语？
-3. **考察方式解析**：结合原句，分析出题人是怎么设置语境或长难句陷阱的（例如熟词僻义、主被动转换、长定语干扰等），做题时应该如何应对？
+【处理要求】：
+1. 若提供的原句中存在考场指令或排版残片，请自动忽略，仅依据语义完整的原句进行分析。
+2. **考察释义**：归纳该单词在真题中实际考察的核心含义（标注年份）。
+3. **相关短语**：提炼原句中出现的固定搭配或高频词组。
+4. **考察方式解析**：结合真题语境，分析出题人在长难句或选项中设置的考查逻辑。
 """
                 try:
                     response = client.chat.completions.create(
@@ -156,12 +144,12 @@ if st.button("透视真题考法"):
                         stream=False
                     )
                     
-                                        ai_analysis = response.choices[0].message.content
+                    ai_analysis = response.choices[0].message.content
                     
                     st.markdown("### 🎯 真题考法深度解析")
                     st.markdown(ai_analysis)
                     
-                    # ================= 新增：独立下载解析按钮 =================
+                    # --- 独立下载按钮 2：仅下载解析 ---
                     st.markdown("---")
                     analysis_note = f"【真题考法深度解析：{target_word}】\n" + "="*40 + "\n\n" + ai_analysis
                     st.download_button(
@@ -170,6 +158,6 @@ if st.button("透视真题考法"):
                         file_name=f"{target_word}_考法解析.txt",
                         mime="text/plain"
                     )
-
+                    
                 except Exception as e:
                     st.error(f"深度解析调用失败，错误信息: {e}")
