@@ -11,11 +11,20 @@ st.markdown("结合本地真题数据库与 SiliconFlow 模型，精准解析每
 # ================= 侧边栏：API 密钥与配置 =================
 with st.sidebar:
     st.header("⚙️ 系统配置")
-    # 优先从 Streamlit Secrets 读取，也可在界面手动输入
-    secret_key = st.secrets.get("SILICONFLOW_API_KEY", "")
-    api_key = st.text_input("请输入 SiliconFlow API Key", value=secret_key, type="password")
+    
+    # 尝试从 Streamlit Secrets 中读取
+    api_key = st.secrets.get("SILICONFLOW_API_KEY", "")
+    
+    # 判断逻辑：如果 Secrets 里没有配置，才显示手动输入框
+    if not api_key:
+        api_key = st.text_input("请输入 SiliconFlow API Key", type="password")
+        st.warning("👈 未检测到内置密钥，请手动输入")
+    else:
+        st.success("✅ 密钥已自动加载，无需输入！")
+        
     st.markdown("---")
     st.caption("当前调用模型: `deepseek-ai/DeepSeek-V4-Flash`")
+
 
 # ================= 核心逻辑：加载数据与检索 =================
 @st.cache_data
