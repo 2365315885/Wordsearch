@@ -116,13 +116,23 @@ if st.button("透视真题考法"):
         else:
             st.success(f"检索完毕！共找到 {len(matched_results)} 条原句。")
             
-            # 展示原句出处并拼装上下文
+                        # 展示原句出处并拼装上下文
             extracted_text = ""
             with st.expander("查看真题原句出处", expanded=False):
                 for res in matched_results:
                     line = f"[{res['year']} {res['source']}] {res['sentence']}"
                     st.markdown(f"- {line}")
                     extracted_text += line + "\n"
+            
+            # ================= 新增：独立下载原句按钮 =================
+            sentences_note = f"【真题原句出处：{target_word}】\n检索词根簇：{variants_str}\n" + "="*40 + "\n\n" + extracted_text
+            st.download_button(
+                label="💾 仅下载真题原句 (TXT)",
+                data=sentences_note,
+                file_name=f"{target_word}_真题原句.txt",
+                mime="text/plain"
+            )
+
 
             # --- 第二步：组装 Prompt 并调用大模型深度分析 ---
             with st.spinner('🧠 AI 正在深度解析真题考法，请稍候...'):
@@ -146,7 +156,20 @@ if st.button("透视真题考法"):
                         stream=False
                     )
                     
+                                        ai_analysis = response.choices[0].message.content
+                    
                     st.markdown("### 🎯 真题考法深度解析")
-                    st.markdown(response.choices[0].message.content)
+                    st.markdown(ai_analysis)
+                    
+                    # ================= 新增：独立下载解析按钮 =================
+                    st.markdown("---")
+                    analysis_note = f"【真题考法深度解析：{target_word}】\n" + "="*40 + "\n\n" + ai_analysis
+                    st.download_button(
+                        label="💾 仅下载AI深度解析 (TXT)",
+                        data=analysis_note,
+                        file_name=f"{target_word}_考法解析.txt",
+                        mime="text/plain"
+                    )
+
                 except Exception as e:
                     st.error(f"深度解析调用失败，错误信息: {e}")
