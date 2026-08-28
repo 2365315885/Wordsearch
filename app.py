@@ -5,8 +5,8 @@ from openai import OpenAI
 
 # ================= 页面基础配置 =================
 st.set_page_config(page_title="考研真题透视", page_icon="📖")
-st.title("📖 考研英语真题透视 (SiliconFlow 版)")
-st.markdown("结合本地真题数据库与 SiliconFlow 模型，精准解析每个单词在真题中的具体考法。")
+st.title("📖 考研英语真题透视 (终极扩展版)")
+st.markdown("结合本地真题数据库与 SiliconFlow 模型，精准解析单词及其**所有变形**在真题中的具体考法。")
 
 # ================= 侧边栏：API 密钥与配置 =================
 with st.sidebar:
@@ -25,11 +25,13 @@ with st.sidebar:
     st.markdown("---")
     st.caption("当前调用模型: `deepseek-ai/DeepSeek-V4-Flash`")
 
+# ================= 核心功能函数 =================
 
-# ================= 核心逻辑：加载数据与检索 =================
 @st.cache_data
 def load_data():
+    """加载本地真题 JSON 数据"""
     try:
+        # 这里默认读取 data.json，如果你合并了 PDF/Word 的数据，确保都存进了这个文件
         with open('data.json', 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
@@ -38,34 +40,69 @@ def load_data():
 
 exam_data = load_data()
 
-def search_word(word, data):
+def get_word_variants(word, client):
+    """利用大模型获取单词的所有变形"""
+    prompt = f"""
+    请给出英语单词 "{word}" 的所有常见屈折变化形式（包括复数、过去式、过去分词、现在分词、第三人称单数等）。
+    要求：只输出单词本身，用竖线 "|" 分隔。绝对不要输出任何标点符号、解释或其他多余文字。
+    示例：输入 "make"，输出 "make|makes|made|making"
+    """
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-ai/DeepSeek-V4-Flash",
+            messages=[{"role": "user", "content": prompt}],
+            stream=False
+        )
+        # 清理返回结果，去除可能包含的空格或换行
+        variants = response.choices[0].message.content.strip()
+        variants = re.sub(r'\s+', '', variants) 
+        return variants
+    except Exception as e:
+        # 如果调用失败，保底返回原词
+        return word
+
+def search_word_expanded(word_variants_str, data):
+    """使用包含多变形的正则表达式在本地库中精确搜索"""
     results = []
-    # 正则表达式：\b 匹配单词边界
-    pattern = re.compile(rf'\b{word}\b', re.IGNORECASE)
+    # 构建多重匹配正则，例如 \b(subject|subjects|subjected)\b，忽略大小写
+    try:
+        pattern = re.compile(rf'\b({word_variants_str})\b', re.IGNORECASE)
+    except re.error:
+        # 如果 AI 返回了奇怪的符号导致正则崩溃，回退到普通匹配
+        pattern = re.compile(rf'\b{word_variants_str}\b', re.IGNORECASE)
+        
     for item in data:
         if pattern.search(item['sentence']):
             results.append(item)
     return results
 
-# ================= 主界面交互 =================
-target_word = st.text_input("🔍 输入要查询的考研单词 (例如: subject)")
+# ================= 主界面交互逻辑 =================
+target_word = st.text_input("🔍 输入要查询的考研单词 (例如: seek)")
 
 if st.button("透视真题考法"):
     if not target_word.strip():
         st.warning("请先输入需要查询的单词。")
-    elif not api_key.strip():
-        st.warning("请在左侧栏输入你的 SiliconFlow API Key。")
+    elif not api_key:
+        st.warning("请配置 SiliconFlow API Key。")
     else:
-        # 1. 本地真题检索
-        with st.spinner('正在真题库中检索原句...'):
-            matched_results = search_word(target_word.strip(), exam_data)
+        # 初始化 API 客户端
+        client = OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn/v1")
+        
+        # --- 第 0 步：词形动态扩展 ---
+        with st.spinner('🤖 正在智能推演单词变形...'):
+            variants_str = get_word_variants(target_word.strip(), client)
+            st.caption(f"🔍 实际检索词根簇: `{variants_str}`")
+
+        # --- 第一步：传统数据库精准检索 ---
+        with st.spinner('⚡ 正在真题库中扫荡原句...'):
+            matched_results = search_word_expanded(variants_str, exam_data)
         
         if not matched_results:
-            st.info(f"在当前的题库中没有找到关于 '{target_word}' 的真题出处。")
+            st.info(f"在当前的题库中没有找到关于 '{target_word}' 及其变形的真题出处。")
         else:
             st.success(f"检索完毕！共找到 {len(matched_results)} 条原句。")
             
-            # 展示原句出处
+            # 展示原句出处并拼装上下文
             extracted_text = ""
             with st.expander("查看真题原句出处", expanded=False):
                 for res in matched_results:
@@ -73,11 +110,11 @@ if st.button("透视真题考法"):
                     st.markdown(f"- {line}")
                     extracted_text += line + "\n"
 
-            # 2. 组装 Prompt 并调用 SiliconFlow API
-            with st.spinner('AI 正在深度解析真题考法，请稍候...'):
+            # --- 第二步：组装 Prompt 并调用大模型深度分析 ---
+            with st.spinner('🧠 AI 正在深度解析真题考法，请稍候...'):
                 prompt = f"""
-你是一个专业的考研英语分析专家。现在我要重点分析单词【{target_word}】。
-以下是这个单词在历年考研真题中的所有出处原句：
+你是一个专业的考研英语分析专家。现在我要重点分析单词【{target_word}】及其变形【{variants_str}】。
+以下是它们在历年考研真题中的所有出处原句：
 {extracted_text}
 
 请根据以上【真实的真题语料】，进行归纳并输出：
@@ -86,12 +123,6 @@ if st.button("透视真题考法"):
 3. **考察方式解析**：结合原句，分析出题人是怎么设置语境或长难句陷阱的（例如熟词僻义、主被动转换、长定语干扰等），做题时应该如何应对？
 """
                 try:
-                    # 连接硅基流动 API
-                    client = OpenAI(
-                        api_key=api_key,
-                        base_url="https://api.siliconflow.cn/v1"
-                    )
-                    
                     response = client.chat.completions.create(
                         model="deepseek-ai/DeepSeek-V4-Flash",
                         messages=[
@@ -101,8 +132,7 @@ if st.button("透视真题考法"):
                         stream=False
                     )
                     
-                    st.markdown("### 🧠 真题考法深度解析")
+                    st.markdown("### 🎯 真题考法深度解析")
                     st.markdown(response.choices[0].message.content)
                 except Exception as e:
-                    st.error(f"调用失败，错误信息: {e}")
-
+                    st.error(f"深度解析调用失败，错误信息: {e}")
