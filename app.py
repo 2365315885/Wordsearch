@@ -41,7 +41,7 @@ def load_data():
 exam_data = load_data()
 
 def get_word_variants(word, client):
-    """利用大模型获取单词的所有变形"""
+    """利用大模型获取单词的所有变形（带思维链标签过滤与去重）"""
     prompt = f"""
     请给出英语单词 "{word}" 的所有常见屈折变化形式（包括复数、过去式、过去分词、现在分词、第三人称单数等）。
     要求：只输出单词本身，用竖线 "|" 分隔。绝对不要输出任何标点符号、解释或其他多余文字。
@@ -53,13 +53,27 @@ def get_word_variants(word, client):
             messages=[{"role": "user", "content": prompt}],
             stream=False
         )
-        # 清理返回结果，去除可能包含的空格或换行
-        variants = response.choices[0].message.content.strip()
-        variants = re.sub(r'\s+', '', variants) 
-        return variants
+        raw_content = response.choices[0].message.content.strip()
+        
+        # 1. 过滤掉大模型自带的 <think>...</think> 思维链标签及残留标记
+        cleaned = re.sub(r'<think>.*?</think>', '', raw_content, flags=re.DOTALL)
+        cleaned = re.sub(r'</?think>', '', cleaned)
+        
+        # 2. 仅保留英文字母和分隔符 "|"（剔除空格、换行及特殊符号）
+        cleaned = re.sub(r'[^a-zA-Z|]', '', cleaned)
+        
+        # 3. 拆分、去重，并强制确保原词一定在检索列表内
+        variants_list = [v.strip() for v in cleaned.split('|') if v.strip()]
+        if word.lower() not in [v.lower() for v in variants_list]:
+            variants_list.append(word.strip())
+            
+        # 重新拼接为管道符形式，如 "ever" 或 "make|makes|made|making"
+        return "|".join(list(dict.fromkeys(variants_list)))
+        
     except Exception as e:
-        # 如果调用失败，保底返回原词
+        # 模型调用异常时保底返回原词
         return word
+
 
 def search_word_expanded(word_variants_str, data):
     """使用包含多变形的正则表达式在本地库中精确搜索"""
