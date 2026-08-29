@@ -79,6 +79,10 @@ def search_word_expanded(word_variants_str, data):
             results.append(item)
     return results
 
+# ================= 初始化 Session State =================
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
+
 # ================= 主界面交互逻辑 =================
 target_word = st.text_input("🔍 输入要查询的考研单词 (例如: seek)")
 
@@ -93,33 +97,22 @@ if st.button("透视真题考法"):
         # --- 步骤 0：词形动态扩展 ---
         with st.spinner('🤖 正在智能推演单词变形...'):
             variants_str = get_word_variants(target_word.strip(), client)
-            st.caption(f"🔍 实际检索词根簇: `{variants_str}`")
 
         # --- 步骤 1：本地真题库检索 ---
         with st.spinner('⚡ 正在真题库中扫荡原句...'):
             matched_results = search_word_expanded(variants_str, exam_data)
         
         if not matched_results:
-            st.info(f"在当前的题库中没有找到关于 '{target_word}' 及其变形的真题出处。")
+            st.session_state.analysis_result = {
+                "has_data": False,
+                "target_word": target_word.strip(),
+                "variants_str": variants_str
+            }
         else:
-            st.success(f"检索完毕！共找到 {len(matched_results)} 条原句。")
-            
-            # 展示原句出处并拼装原句内容
             extracted_text = ""
-            with st.expander("查看真题原句出处", expanded=False):
-                for res in matched_results:
-                    line = f"[{res.get('year', '')} {res.get('source', '')}] {res.get('sentence', '')}"
-                    st.markdown(f"- {line}")
-                    extracted_text += line + "\n"
-            
-            # --- 独立下载按钮 1：仅下载原句 ---
-            sentences_note = f"【真题原句出处：{target_word}】\n检索词根簇：{variants_str}\n" + "="*40 + "\n\n" + extracted_text
-            st.download_button(
-                label="💾 仅下载真题原句 (TXT)",
-                data=sentences_note,
-                file_name=f"{target_word}_真题原句.txt",
-                mime="text/plain"
-            )
+            for res in matched_results:
+                line = f"[{res.get('year', '')} {res.get('source', '')}] {res.get('sentence', '')}"
+                extracted_text += line + "\n"
 
             # --- 步骤 2：调用大模型深度分析 ---
             with st.spinner('🧠 AI 正在深度解析真题考法，请稍候...'):
@@ -146,18 +139,56 @@ if st.button("透视真题考法"):
                     
                     ai_analysis = response.choices[0].message.content
                     
-                    st.markdown("### 🎯 真题考法深度解析")
-                    st.markdown(ai_analysis)
-                    
-                    # --- 独立下载按钮 2：仅下载解析 ---
-                    st.markdown("---")
-                    analysis_note = f"【真题考法深度解析：{target_word}】\n" + "="*40 + "\n\n" + ai_analysis
-                    st.download_button(
-                        label="💾 仅下载AI深度解析 (TXT)",
-                        data=analysis_note,
-                        file_name=f"{target_word}_考法解析.txt",
-                        mime="text/plain"
-                    )
-                    
+                    # 将完整结果存入 session_state 避免被下载重置
+                    st.session_state.analysis_result = {
+                        "has_data": True,
+                        "target_word": target_word.strip(),
+                        "variants_str": variants_str,
+                        "matched_results": matched_results,
+                        "extracted_text": extracted_text,
+                        "ai_analysis": ai_analysis
+                    }
                 except Exception as e:
                     st.error(f"深度解析调用失败，错误信息: {e}")
+                    st.session_state.analysis_result = None
+
+# ================= 渲染结果区域（状态持久化） =================
+if st.session_state.analysis_result:
+    res = st.session_state.analysis_result
+    st.caption(f"🔍 实际检索词根簇: `{res['variants_str']}`")
+    
+    if not res.get("has_data"):
+        st.info(f"在当前的题库中没有找到关于 '{res['target_word']}' 及其变形的真题出处。")
+    else:
+        st.success(f"检索完毕！共找到 {len(res['matched_results'])} 条原句。")
+        
+        # 1. 原句展示
+        with st.expander("查看真题原句出处", expanded=False):
+            for item in res['matched_results']:
+                line = f"[{item.get('year', '')} {item.get('source', '')}] {item.get('sentence', '')}"
+                st.markdown(f"- {line}")
+        
+        # 2. 仅下载原句按钮
+        sentences_note = f"【真题原句出处：{res['target_word']}】\n检索词根簇：{res['variants_str']}\n" + "="*40 + "\n\n" + res['extracted_text']
+        st.download_button(
+            label="💾 仅下载真题原句 (TXT)",
+            data=sentences_note,
+            file_name=f"{res['target_word']}_真题原句.txt",
+            mime="text/plain",
+            key="btn_download_sentences"
+        )
+        
+        # 3. AI 深度解析展示
+        st.markdown("### 🎯 真题考法深度解析")
+        st.markdown(res['ai_analysis'])
+        
+        # 4. 仅下载解析按钮
+        st.markdown("---")
+        analysis_note = f"【真题考法深度解析：{res['target_word']}】\n" + "="*40 + "\n\n" + res['ai_analysis']
+        st.download_button(
+            label="💾 仅下载AI深度解析 (TXT)",
+            data=analysis_note,
+            file_name=f"{res['target_word']}_考法解析.txt",
+            mime="text/plain",
+            key="btn_download_analysis"
+        )
