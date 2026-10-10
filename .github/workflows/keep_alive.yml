@@ -1,6 +1,8 @@
 name: Keep Streamlit App Alive
 
 on:
+  push:
+    branches: [ main ]
   schedule:
     # 每 8 小时执行一次，重置 12 小时休眠倒计时
     - cron: '0 */8 * * *'
