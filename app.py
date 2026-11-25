@@ -5,22 +5,43 @@ from openai import OpenAI
 
 # ================= 页面基础配置 =================
 st.set_page_config(page_title="考研真题透视", page_icon="📖")
-st.title("📖 考研英语真题透视 (双模式版)")
-st.markdown("结合本地真题数据库与 SiliconFlow 模型，精准解析单词及其**所有变形**在真题中的具体考法。")
+st.title("📖 考研英语真题透视 (Gemini 双模式版)")
+st.markdown("结合本地真题数据库与 Gemini 模型，精准解析单词及其**所有变形**在真题中的具体考法。")
 
-# ================= 侧边栏：API 密钥与配置 =================
+# ================= 侧边栏：API 密钥与模型配置 =================
 with st.sidebar:
     st.header("⚙️ 系统配置")
-    api_key = st.secrets.get("SILICONFLOW_API_KEY", "")
     
-    if not api_key:
-        api_key = st.text_input("请输入 SiliconFlow API Key", type="password")
+    # 安全读取 Streamlit Secrets（防止本地无 secrets.toml 时报错）
+    try:
+        default_key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        default_key = ""
+    
+    if not default_key:
+        api_key = st.text_input("请输入 Gemini API Key", type="password")
         st.warning("👈 未检测到内置密钥，请手动输入")
     else:
-        st.success("✅ 密钥已自动加载，无需输入！")
+        api_key = default_key
+        st.success("✅ Gemini 密钥已自动加载！")
         
     st.markdown("---")
-    st.caption("当前调用模型: `deepseek-ai/DeepSeek-V4-Flash`")
+    
+    # 接口地址：默认为 Google AI Studio 的 OpenAI 兼容端点；用中转站直接改这里
+    base_url = st.text_input(
+        "API Base URL",
+        value="https://generativelanguage.googleapis.com/v1beta/openai/",
+        help="官方默认地址无需修改；如使用第三方中转站，请替换为对应 /v1 地址"
+    )
+    
+    # 模型名称：请替换为后台实际的精确 Model ID
+    model_name = st.text_input(
+        "模型 ID (Model Name)",
+        value="gemini-4-hydrogen",
+        help="请核对 API 后台的模型列表，填入精确的模型字符串（区分格式且不能有空格）"
+    )
+    
+    st.caption(f"当前调用模型: `{model_name}`")
 
 # ================= 核心功能函数 =================
 @st.cache_data
@@ -34,7 +55,7 @@ def load_data():
 
 exam_data = load_data()
 
-def get_word_variants(word, client):
+def get_word_variants(word, client, model):
     prompt = f"""
     请给出英语单词 "{word}" 的所有常见屈折变化形式（包括复数、过去式、过去分词、现在分词、第三人称单数等）。
     要求：只输出单词本身，用竖线 "|" 分隔。绝对不要输出任何标点符号、解释或其他多余文字。
@@ -42,11 +63,11 @@ def get_word_variants(word, client):
     """
     try:
         response = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-V4-Flash",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             stream=False
         )
-        raw_content = response.choices[0].message.content.strip()
+        raw_content = (response.choices[0].message.content or "").strip()
         cleaned = re.sub(r'<think>.*?</think>', '', raw_content, flags=re.DOTALL)
         cleaned = re.sub(r'</?think>', '', cleaned)
         cleaned = re.sub(r'[^a-zA-Z|]', '', cleaned)
@@ -54,7 +75,8 @@ def get_word_variants(word, client):
         if word.lower() not in [v.lower() for v in variants_list]:
             variants_list.append(word.strip())
         return "|".join(list(dict.fromkeys(variants_list)))
-    except Exception:
+    except Exception as e:
+        st.warning(f"词形推演调用异常，已退回原词检索：{e}")
         return word
 
 def search_word_expanded(word_variants_str, data):
@@ -80,7 +102,6 @@ if "run_mode" not in st.session_state:
 # ================= 主界面交互逻辑 =================
 target_word = st.text_input("🔍 输入要查询的考研单词 (例如: seek)")
 
-# 新增：运行模式切换按钮
 selected_mode = st.radio(
     "⚙️ 选择运行模式：",
     ("模式一：仅检索真题原句 (快速提取，可用于喂给其他AI)", "模式二：检索并进行 AI 深度解析 (完整打字机推演)"),
@@ -91,18 +112,21 @@ if st.button("透视真题考法"):
     if not target_word.strip():
         st.warning("请先输入需要查询的单词。")
     elif not api_key:
-        st.warning("请配置 SiliconFlow API Key。")
+        st.warning("请先在侧边栏或 Secrets 中配置 Gemini API Key。")
+    elif not model_name.strip():
+        st.warning("请填写正确的模型 ID。")
     else:
         st.session_state.is_computing = True
-        st.session_state.run_mode = selected_mode # 锁定当前选择的模式
+        st.session_state.run_mode = selected_mode
         st.session_state.analysis_result = None
 
 # ================= 执行运算并实时流式输出 =================
 if st.session_state.is_computing:
-    client = OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn/v1")
+    client = OpenAI(api_key=api_key, base_url=base_url.strip())
+    current_model = model_name.strip()
     
     with st.spinner('🤖 正在推演单词变形...'):
-        variants_str = get_word_variants(target_word.strip(), client)
+        variants_str = get_word_variants(target_word.strip(), client, current_model)
         
     with st.spinner('⚡ 正在真题库中扫荡原句...'):
         matched_results = search_word_expanded(variants_str, exam_data)
@@ -121,9 +145,7 @@ if st.session_state.is_computing:
                 st.markdown(f"- {line}")
                 extracted_text += line + "\n"
 
-        # 判断执行逻辑分支
         if st.session_state.run_mode.startswith("模式一"):
-            # 【模式一】直接封装数据并停止计算
             st.session_state.analysis_result = {
                 "mode": "mode1",
                 "target_word": target_word.strip(),
@@ -133,10 +155,9 @@ if st.session_state.is_computing:
                 "ai_analysis": None
             }
             st.session_state.is_computing = False
-            st.rerun() # 强制刷新页面以展示下载按钮
+            st.rerun()
             
         else:
-            # 【模式二】继续执行大模型深度解析
             st.markdown("### 🎯 真题考法深度解析")
             ai_placeholder = st.empty()
             
@@ -153,17 +174,17 @@ if st.session_state.is_computing:
 """
             try:
                 response = client.chat.completions.create(
-                    model="deepseek-ai/DeepSeek-V4-Flash",
+                    model=current_model,
                     messages=[
                         {"role": "system", "content": "你是一个严谨的考研英语语料分析助手。"},
                         {"role": "user", "content": prompt}
                     ],
-                    stream=True 
+                    stream=True
                 )
                 
                 ai_analysis = ""
                 for chunk in response:
-                    if len(chunk.choices) > 0 and chunk.choices[0].delta.content is not None:
+                    if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                         ai_analysis += chunk.choices[0].delta.content
                         ai_placeholder.markdown(ai_analysis + "▌")
                         
@@ -181,7 +202,7 @@ if st.session_state.is_computing:
                 st.rerun()
                 
             except Exception as e:
-                st.error(f"深度解析调用失败，错误信息: {e}")
+                st.error(f"深度解析调用失败，请检查模型 ID、Base URL 或 Key 是否正确。\n\n错误信息: {e}")
                 st.session_state.is_computing = False
 
 # ================= 渲染已锁定结果及下载按钮 =================
@@ -196,7 +217,6 @@ elif st.session_state.analysis_result:
             line = f"[{res_item.get('year', '')} {res_item.get('source', '')}] {res_item.get('sentence', '')}"
             st.markdown(f"- {line}")
             
-    # 【无论哪种模式，都渲染“下载真题原句”按钮】
     sentences_note = f"【真题原句出处：{res['target_word']}】\n检索词根簇：{res['variants_str']}\n" + "="*40 + "\n\n" + res['extracted_text']
     st.download_button(
         label="💾 下载真题原句 (TXT)",
@@ -206,7 +226,6 @@ elif st.session_state.analysis_result:
         key="btn_dl_sentences"
     )
     
-    # 【仅在模式二且存在解析数据时，渲染解析内容及对应下载按钮】
     if res.get("mode") == "mode2" and res.get("ai_analysis"):
         st.markdown("### 🎯 真题考法深度解析")
         st.markdown(res['ai_analysis'])
